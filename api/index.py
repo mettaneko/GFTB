@@ -38,6 +38,14 @@ AVAILABLE_MODELS = {
     "gemini-3.5-flash-lite": "🪶 Gemini 3.5 Flash-Lite (Быстрая)"
 }
 
+DEFAULT_MODE = "chat"
+AVAILABLE_MODES = {
+    "chat": "💬 Чат / Текст",
+    "analyze": "🔍 Анализ фото (Gemini)",
+    "edit": "🎨 Редактирование фото (Qwen)",
+    "generate": "🖼 Генерация картинок (FLUX)"
+}
+
 ALLOWED_USERS = {
     int(uid.strip())
     for uid in os.getenv("ALLOWED_USERS", "").split(",")
@@ -73,7 +81,26 @@ def set_user_model(user_id: int, model_name: str) -> None:
             pass
 
 
-def get_model_keyboard(current_model: str = "") -> types.InlineKeyboardMarkup:
+def get_user_mode(user_id: int) -> str:
+    if redis:
+        try:
+            stored = redis.get(f"user_mode:{user_id}")
+            if stored and stored in AVAILABLE_MODES:
+                return stored
+        except Exception:
+            pass
+    return DEFAULT_MODE
+
+
+def set_user_mode(user_id: int, mode_name: str) -> None:
+    if redis and mode_name in AVAILABLE_MODES:
+        try:
+            redis.set(f"user_mode:{user_id}", mode_name)
+        except Exception:
+            pass
+
+
+def get_model_keyboard(current_model: str) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for model_id, display_name in AVAILABLE_MODELS.items():
         prefix = "✅ " if model_id == current_model else ""
@@ -82,18 +109,25 @@ def get_model_keyboard(current_model: str = "") -> types.InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_mode_keyboard(current_mode: str) -> types.InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for mode_id, display_name in AVAILABLE_MODES.items():
+        prefix = "✅ " if mode_id == current_mode else ""
+        builder.button(text=f"{prefix}{display_name}", callback_data=f"set_mode:{mode_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def get_system_instruction() -> str:
     tz = ZoneInfo("Europe/Moscow")
     now = datetime.now(tz)
     weekdays = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-    current_weekday = weekdays[now.weekday()]
-    formatted_now = now.strftime(f"%d.%m.%Y, {current_weekday}, %H:%M:%S (МСК)")
+    formatted_now = now.strftime(f"%d.%m.%Y, {weekdays[now.weekday()]}, %H:%M:%S (МСК)")
 
     return (
         f"Текущая дата и точное время: {formatted_now}.\n"
-        "Ты внимательный и заботливый семейный ассистент в Telegram. "
-        "Отвечай вежливо, четко и структурированно. "
-        "Для выделения важного используй жирный шрифт или курсив. "
+        "Ты внимательный семейный ассистент в Telegram. "
+        "Отвечай вежливо, структурированно, используй жирный шрифт для ключевых мыслей. "
         "Никогда не используй тройные звёздочки (***)."
     )
 
@@ -106,239 +140,4 @@ def clean_markdown_for_telegram(text: str) -> str:
         code = match.group(2)
         return f'<pre><code class="language-{lang}">{code}</code></pre>'
 
-    text = re.sub(r'```(\w+)?\n?(.*?)```', code_block_sub, text, flags=re.DOTALL)
-    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-    text = re.sub(r'\*\*\*(.*?)\*\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
-    text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-
-    return text
-
-
-@dp.message(CommandStart())
-async def start(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer(f"{EMOJI_B_HEART} Доступ закрыт. Этот бот настроен только для семьи.")
-
-    cur_model = get_user_model(m.from_user.id)
-    text = (
-        f"{EMOJI_SHAKE} Привет! Я — ваш семейный ИИ-помощник.\n\n"
-        f"• <b>Активная модель:</b> <code>{cur_model}</code>\n"
-        f"• <b>Выбор модели:</b> /model\n\n"
-        f"<b>Что я умею:</b>\n"
-        f"💬 <b>Текстовый диалог:</b> Просто спроси что угодно — я мгновенно отвечу.\n"
-        f"🖼 <b>Фотографии:</b> Отправь фото с вопросом (анализ, рецепт, перевод) или напиши, что на нем изменить (поменять фон, одежду, добавить детали).\n"
-        f"🎨 <code>/image &lt;описание&gt;</code> — нарисовать новую картинку с нуля."
-    )
-    await m.answer(text, parse_mode=ParseMode.HTML)
-
-
-@dp.message(Command("model"))
-async def cmd_model(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
-    cur_model = get_user_model(m.from_user.id)
-    await m.answer(
-        f"⚙️ <b>Выберите активную модель нейросети:</b>\nТекущая: <code>{cur_model}</code>",
-        reply_markup=get_model_keyboard(cur_model),
-        parse_mode=ParseMode.HTML
-    )
-
-
-@dp.callback_query(F.data.startswith("set_model:"))
-async def on_model_selected(cb: types.CallbackQuery):
-    if not check_access(cb.from_user.id):
-        return await cb.answer("Доступ ограничен.", show_alert=True)
-
-    new_model = cb.data.split("set_model:")[1]
-    if new_model in AVAILABLE_MODELS:
-        set_user_model(cb.from_user.id, new_model)
-        await cb.answer(f"Модель изменена на {new_model}")
-        try:
-            await cb.message.edit_text(
-                f"{EMOJI_OK} <b>Модель успешно изменена на:</b> <code>{new_model}</code>\n"
-                f"<i>{AVAILABLE_MODELS[new_model]}</i>",
-                reply_markup=get_model_keyboard(new_model),
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
-
-
-@dp.message(F.text & ~F.text.startswith("/"))
-async def chat_stream(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
-
-    await bot.send_chat_action(m.chat.id, "typing")
-    sent_message = await m.answer(f"{EMOJI_THINK} <i>Думаю...</i>", parse_mode=ParseMode.HTML)
-
-    full_text = ""
-    last_edit_time = time.time()
-    edit_delay = 0.8
-    system_instruction = get_system_instruction()
-    user_model = get_user_model(m.from_user.id)
-
-    try:
-        response_stream = ai.models.generate_content_stream(
-            model=user_model,
-            contents=m.text,
-            config=dict(system_instruction=system_instruction)
-        )
-
-        for chunk in response_stream:
-            if chunk.text:
-                full_text += chunk.text
-                current_time = time.time()
-
-                if current_time - last_edit_time > edit_delay:
-                    try:
-                        await sent_message.edit_text(full_text + " ▌", parse_mode=None)
-                        last_edit_time = current_time
-                    except Exception:
-                        pass
-
-        if full_text.strip():
-            formatted_html = clean_markdown_for_telegram(full_text)
-            try:
-                await sent_message.edit_text(formatted_html, parse_mode=ParseMode.HTML)
-            except Exception:
-                await sent_message.edit_text(full_text, parse_mode=None)
-
-    except Exception as e:
-        err_str = str(e)
-        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-            await sent_message.edit_text(
-                f"{EMOJI_B_HEART} <b>Закончилась квота для модели</b> <code>{user_model}</code>!\n\n"
-                f"Выберите другую модель для продолжения работы:",
-                reply_markup=get_model_keyboard(user_model),
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await sent_message.edit_text(f"{EMOJI_B_HEART} Ошибка генерации: {err_str}", parse_mode=ParseMode.HTML)
-
-
-@dp.message(F.photo)
-async def photo_handler(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
-
-    raw_caption = (m.caption or "").strip()
-    is_edit_request = False
-    final_caption = raw_caption
-
-    if raw_caption.lower().startswith("/edit"):
-        is_edit_request = True
-        final_caption = raw_caption.replace("/edit", "", 1).strip()
-    elif raw_caption:
-        # Умный AI-маршрутизатор: определяет интент по смыслу фразы
-        try:
-            intent_res = ai.models.generate_content(
-                model="gemini-2.0-flash-lite",
-                contents=(
-                    f"Text: '{raw_caption}'. "
-                    "Determine if the user wants to EDIT/MODIFY this image (e.g. change face, clothes, background, add objects) "
-                    "or ANALYZE/DESCRIBE it (e.g. what is this, translate text, explain, recipe). "
-                    "Answer strictly with 1 word: EDIT or ANALYZE."
-                )
-            )
-            if "EDIT" in intent_res.text.upper():
-                is_edit_request = True
-        except Exception:
-            pass
-    else:
-        final_caption = "Опиши подробно, что изображено на картинке."
-
-    if is_edit_request:
-        if not redis:
-            return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
-
-        task = {
-            "type": "edit_image",
-            "chat_id": m.chat.id,
-            "message_id": m.message_id,
-            "file_id": m.photo[-1].file_id,
-            "prompt": final_caption,
-            "created_at": time.time()
-        }
-        redis.rpush("media_queue", json.dumps(task))
-        return await m.answer(f"{EMOJI_OK} Задача на редактирование добавлена в очередь.", parse_mode=ParseMode.HTML)
-
-    # Ветка анализа фото (Vision)
-    await bot.send_chat_action(m.chat.id, "typing")
-    status_msg = await m.reply(f"{EMOJI_THINK} <i>Анализирую фото...</i>", parse_mode=ParseMode.HTML)
-    user_model = get_user_model(m.from_user.id)
-
-    try:
-        file_info = await bot.get_file(m.photo[-1].file_id)
-        buf = io.BytesIO()
-        await bot.download_file(file_info.file_path, destination=buf)
-
-        res = ai.models.generate_content(
-            model=user_model,
-            contents=[
-                genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"),
-                final_caption
-            ],
-            config=dict(system_instruction=get_system_instruction())
-        )
-        formatted_html = clean_markdown_for_telegram(res.text)
-        try:
-            await status_msg.edit_text(formatted_html, parse_mode=ParseMode.HTML)
-        except Exception:
-            await status_msg.edit_text(res.text, parse_mode=None)
-
-    except Exception as e:
-        err_str = str(e)
-        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-            await status_msg.edit_text(
-                f"{EMOJI_B_HEART} <b>Лимит исчерпан для</b> <code>{user_model}</code>.\nПереключитесь на другую модель:",
-                reply_markup=get_model_keyboard(user_model),
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await status_msg.edit_text(f"{EMOJI_B_HEART} Ошибка: {err_str}", parse_mode=ParseMode.HTML)
-
-
-@dp.message(Command("image"))
-async def gen_image(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
-
-    user_prompt = m.text.replace("/image", "").strip()
-    if not user_prompt:
-        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image уютный осенний парк на закате</code>", parse_mode=ParseMode.HTML)
-
-    if not redis:
-        return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
-
-    task = {
-        "type": "gen_image",
-        "chat_id": m.chat.id,
-        "message_id": m.message_id,
-        "prompt": user_prompt,
-        "created_at": time.time()
-    }
-    redis.rpush("media_queue", json.dumps(task))
-    await m.answer(f"{EMOJI_OK} Задача на генерацию отправлена (FLUX).", parse_mode=ParseMode.HTML)
-
-
-@app.post("/")
-@app.post("/api/index")
-@app.post("/api/index.py")
-async def webhook(req: Request):
-    try:
-        data = await req.json()
-        upd = types.Update(**data)
-        await dp.feed_update(bot, upd)
-    except Exception as e:
-        print(f"Webhook update error: {e}")
-    return {"status": "ok"}
-
-
-@app.get("/")
-@app.get("/api/index")
-@app.get("/api/index.py")
-async def health():
-    return {"status": "alive"}
+    text = re.sub(r'```(\w+)?\n?(.*?)
