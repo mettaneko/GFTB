@@ -127,7 +127,7 @@ async def start(m: types.Message):
         f"• <b>Текущая модель:</b> <code>{cur_model}</code>\n"
         f"• <b>Сменить модель:</b> /model\n"
         f"• <b>Текстовый вопрос</b> — стриминг в реальном времени\n"
-        f"• <b>Фото с описанием</b> — анализ через Gemini или задача на обработку\n"
+        f"• <b>Фото с описанием</b> — умный анализ или задача на обработку\n"
         f"• <code>/image &lt;описание&gt;</code> — генерация картинки (через очередь)\n"
         f"• <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
     )
@@ -224,32 +224,42 @@ async def photo_handler(m: types.Message):
     if not check_access(m.from_user.id):
         return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
-    caption = (m.caption or "").strip()
-    if not caption:
-        caption = "Опиши подробно, что изображено на картинке."
+    raw_caption = (m.caption or "").strip()
+    is_edit_request = False
+    final_caption = raw_caption
 
-    edit_keywords = [
+    # Логика AI-маршрутизатора без привязки к жестким ключевым словам
+    if raw_caption.lower().startswith("/edit"):
+        is_edit_request = True
+        final_caption = raw_caption.replace("/edit", "", 1).strip()
+    elif raw_caption:
+        try:
+            # Сверхбыстрый запрос для определения намерения (доли секунды)
+            intent_res = ai.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=f"Text: '{raw_caption}'. Is this a request to EDIT/MODIFY an image (e.g. change background, add objects), or to ANALYZE/DESCRIBE it? Reply strictly with 1 word: EDIT or ANALYZE."
+            )
+            if "EDIT" in intent_res.text.upper():
+                is_edit_request = True
+        except Exception:
+            pass # Если API упадет, фолбэк уйдет в обычный анализ
+    else:
+        final_caption = "Опиши подробно, что изображено на картинке."
 
-        "сделай", "добавь", "измени", "убери", "нарисуй", "поменяй", "переделай", "в стиле", "лазер",
-
-        "make", "add", "turn", "change", "put", "draw", "laser", "remove", "replace", "shoot"
-    ]
-    is_edit_request = any(kw in caption.lower() for kw in edit_keywords)
     if is_edit_request:
         if not redis:
             return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
 
-        photo_id = m.photo[-1].file_id
         task = {
             "type": "edit_image",
             "chat_id": m.chat.id,
             "message_id": m.message_id,
-            "file_id": photo_id,
-            "prompt": caption,
+            "file_id": m.photo[-1].file_id,
+            "prompt": final_caption,
             "created_at": time.time()
         }
         redis.rpush("media_queue", json.dumps(task))
-        return await m.answer(f"{EMOJI_OK} Задача на редактирование добавлена в очередь.", parse_mode=ParseMode.HTML)
+        return await m.answer(f"{EMOJI_OK} Задача на редактирование отправлена Qwen.", parse_mode=ParseMode.HTML)
 
     await bot.send_chat_action(m.chat.id, "typing")
     status_msg = await m.reply(f"{EMOJI_THINK} <i>Анализирую фото...</i>", parse_mode=ParseMode.HTML)
@@ -264,7 +274,7 @@ async def photo_handler(m: types.Message):
             model=user_model,
             contents=[
                 genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"),
-                caption
+                final_caption
             ],
             config=dict(system_instruction=get_system_instruction())
         )
@@ -306,7 +316,7 @@ async def gen_image(m: types.Message):
         "created_at": time.time()
     }
     redis.rpush("media_queue", json.dumps(task))
-    await m.answer(f"{EMOJI_OK} Задача на генерацию картинки добавлена в очередь.", parse_mode=ParseMode.HTML)
+    await m.answer(f"{EMOJI_OK} Задача на генерацию картинки (FLUX) добавлена в очередь.", parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("video"))
