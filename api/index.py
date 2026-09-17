@@ -35,8 +35,7 @@ AVAILABLE_MODELS = {
     "gemini-3.8-flash": "⚡ Gemini 3.8 Flash (Новейшая)",
     "gemini-3.6-flash": "🚀 Gemini 3.6 Flash",
     "gemini-3.1-pro": "🧠 Gemini 3.1 Pro (Глубокое мышление)",
-    "gemini-3.5-flash-lite": "🪶 Gemini 3.5 Flash-Lite (Быстрая)",
-    "gemini-2.5-flash": "🛡️ Gemini 2.5 Flash (Стабильная)"
+    "gemini-3.5-flash-lite": "🪶 Gemini 3.5 Flash-Lite (Быстрая)"
 }
 
 ALLOWED_USERS = {
