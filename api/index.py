@@ -32,7 +32,7 @@ EMOJI_B_HEART = '<tg-emoji emoji-id="4949561414747423396">💔</tg-emoji>'
 EMOJI_SUS = '<tg-emoji emoji-id="4951814692029858673">🤨</tg-emoji>'
 EMOJI_OK = '<tg-emoji emoji-id="4947363551133041555">👌</tg-emoji>'
 
-MODEL_NAME = "gemini-3.8-flash"
+MODEL_NAME = "gemini-3.6-flash"
 
 ALLOWED_USERS = {
     int(uid.strip())
@@ -94,7 +94,7 @@ async def start(m: types.Message):
         f"• <b>Текстовый вопрос</b> — вывод в реальном времени\n"
         f"• <b>Фото с описанием</b> — анализ изображения\n"
         f"• <code>/image &lt;описание&gt;</code> — генерация картинки\n"
-        f"• {EMOJI_B_HEART} Временно недоступно | <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
+        f"• <b>{EMOJI_B_HEART} Временно недоступно |</b> <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
     )
     await m.answer(text, parse_mode=ParseMode.HTML)
 
@@ -221,39 +221,41 @@ async def gen_image(m: types.Message):
 
     user_prompt = m.text.replace("/image", "").strip()
     if not user_prompt:
-        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image пушистый кот в космосе</code>", parse_mode=ParseMode.HTML)
+        return await m.answer(
+            f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image пушистый кот в космосе</code>", 
+            parse_mode=ParseMode.HTML
+        )
 
-    msg = await m.answer(f"{EMOJI_THINK} <i>Генерирую изображение (Flux)...</i>", parse_mode=ParseMode.HTML)
+    msg = await m.answer(f"{EMOJI_THINK} <i>Генерирую изображение на базе <b>FLUX.1</b>...</i>", parse_mode=ParseMode.HTML)
+
+    final_prompt = user_prompt
+    if ai:
+        enhancer_prompt = (
+            f"Translate to English if needed and optimize this prompt for FLUX image generator. "
+            f"Preserve all specific details. Return ONLY the final prompt text, no explanations, no quotes: {user_prompt}"
+        )
+        for _ in range(2):
+            try:
+                enhanced_res = ai.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=enhancer_prompt
+                )
+                if enhanced_res.text:
+                    final_prompt = enhanced_res.text.strip().replace('"', '')
+                break
+            except Exception:
+                await asyncio.sleep(1)
 
     try:
-        enhancer_prompt = (
-            f"Translate to English if needed and enrich this image prompt for Flux model. "
-            f"Make it visually stunning, 8k resolution, cinematic lighting, detailed textures. "
-            f"Return ONLY the enriched prompt in one paragraph, no extra words, no quotes: {user_prompt}"
-        )
-        enhanced_res = ai.models.generate_content(
-            model=MODEL_NAME,
-            contents=enhancer_prompt
-        )
-        final_prompt = enhanced_res.text.strip().replace('"', '')
-
         encoded_prompt = urllib.parse.quote(final_prompt)
         seed = random.randint(1, 99999999)
-        image_url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?model=flux&width=1024&height=1024&seed={seed}&nologo=true"
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux&width=1024&height=1024&seed={seed}&nologo=true"
 
-        caption = f"🎨 <b>Запрос:</b> {user_prompt}\n✨ <i>Модель: FLUX.1</i>"
+        caption = f"🎨 <b>Запрос:</b> {user_prompt[:300]}\n✨ <i>Модель: FLUX.1</i>"
         await m.answer_photo(photo=image_url, caption=caption, parse_mode=ParseMode.HTML)
         await msg.delete()
-
     except Exception as e:
-        encoded_raw = urllib.parse.quote(user_prompt)
-        image_url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_raw}?model=flux&nologo=true"
-        try:
-            await m.answer_photo(photo=image_url, caption=f"🎨 {user_prompt}")
-            await msg.delete()
-        except Exception:
-            await msg.edit_text(f"{EMOJI_B_HEART} Ошибка генерации: {e}", parse_mode=ParseMode.HTML)
-
+        await msg.edit_text(f"{EMOJI_B_HEART} Ошибка генерации: {e}", parse_mode=ParseMode.HTML)
 
 @dp.message(Command("video"))
 async def queue_video(m: types.Message):
