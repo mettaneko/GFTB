@@ -4,6 +4,8 @@ import io
 import asyncio
 import time
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
 from upstash_redis import Redis
 from aiogram import Bot, Dispatcher, types, F
@@ -25,8 +27,10 @@ UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
 EMOJI_SHAKE = '<tg-emoji emoji-id="4949806429746758578">🤝</tg-emoji>'
 EMOJI_THINK = '<tg-emoji emoji-id="4942915489727775648">🤔</tg-emoji>'
 EMOJI_B_HEART = '<tg-emoji emoji-id="4949561414747423396">💔</tg-emoji>'
+EMOJI_SUS = '<tg-emoji emoji-id="4951814692029858673">🤨</tg-emoji>'
+EMOJI_OK = '<tg-emoji emoji-id="4947363551133041555">👌</tg-emoji>'
 
-MODEL_NAME = "gemini-3.6-flash"
+MODEL_NAME = "gemini-2.5-flash"
 
 ALLOWED_USERS = {
     int(uid.strip())
@@ -44,46 +48,59 @@ def check_access(user_id: int) -> bool:
     return not ALLOWED_USERS or user_id in ALLOWED_USERS
 
 
-@dp.message(CommandStart())
-async def start(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer("⛔ Доступ закрыт. Этот бот настроен только для семьи.")
-    text = (
-        f"👋 {EMOJI_SHAKE} <b>Привет! Я семейный ИИ-ассистент.</b>\n\n"
-        f"• <b>Текстовый вопрос</b> — вывод в реальном времени\n"
-        f"• <b>Фото с описанием</b> — анализ изображения\n"
-        f"• <code>/image &lt;описание&gt;</code> — генерация картинки\n"
-        f"• <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
+def get_system_instruction() -> str:
+    tz = ZoneInfo("Europe/Moscow")
+    now = datetime.now(tz)
+    weekdays = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    current_weekday = weekdays[now.weekday()]
+    formatted_now = now.strftime(f"%d.%m.%Y, {current_weekday}, %H:%M:%S (МСК)")
+
+    return (
+        f"Текущая дата и точное время: {formatted_now}.\n"
+        "Ты умный и полезный семейный ассистент в Telegram. Форматируй текст аккуратно: "
+        "для выделения используй **жирный** или *курсив*, "
+        "для блоков кода обязательно используй тройные кавычки ```язык с кодом внутри. "
+        "Никогда не используй тройные звёздочки (***)."
     )
-    await m.answer(text, parse_mode=ParseMode.HTML)
+
 
 def clean_markdown_for_telegram(text: str) -> str:
-    """Очищает и адаптирует форматирование нейросети под Telegram HTML."""
-
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def code_block_sub(match):
         lang = match.group(1) or ""
         code = match.group(2)
         return f'<pre><code class="language-{lang}">{code}</code></pre>'
-    
+
     text = re.sub(r'```(\w+)?\n?(.*?)```', code_block_sub, text, flags=re.DOTALL)
-
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-
     text = re.sub(r'\*\*\*(.*?)\*\*\*', r'<b>\1</b>', text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
-
     text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
 
     return text
 
 
+@dp.message(CommandStart())
+async def start(m: types.Message):
+    if not check_access(m.from_user.id):
+        return await m.answer(f"{EMOJI_B_HEART} Доступ закрыт. Этот бот настроен только для семьи.")
+    
+    text = (
+        f"{EMOJI_SHAKE} <b>Привет! Я - GFTB, Семейный, БЕСПЛАТНЫЙ ИИ-ассистент.</b>\n\n"
+        f"• <b>Текстовый вопрос</b> — вывод в реальном времени\n"
+        f"• <b>Фото с описанием</b> — анализ изображения\n"
+        f"• <code>/image &lt;описание&gt;</code> — генерация картинки\n"
+        f"• <code>/video &lt;описание&gt;</code> — генерация видео (через очередь) // {EMOJI_B_HEART} Временно недоступно"
+    )
+    await m.answer(text, parse_mode=ParseMode.HTML)
+
+
 @dp.message(F.text & ~F.text.startswith("/"))
 async def chat_stream(m: types.Message):
     if not check_access(m.from_user.id):
-        return await m.answer("💔 {EMOJI_B_HEART} Доступ ограничен.")
+        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
     await bot.send_chat_action(m.chat.id, "typing")
     sent_message = await m.answer(f"{EMOJI_THINK} <i>Думаю...</i>", parse_mode=ParseMode.HTML)
@@ -91,13 +108,7 @@ async def chat_stream(m: types.Message):
     full_text = ""
     last_edit_time = time.time()
     edit_delay = 0.8
-
-    system_instruction = (
-        "Ты помощник в Telegram. Форматируй текст аккуратно: "
-        "для выделения используй **жирный** или *курсив*, "
-        "для блоков кода обязательно используй тройные кавычки ```язык с кодом внутри. "
-        "Не используй тройные звёздочки (***)."
-    )
+    system_instruction = get_system_instruction()
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -105,9 +116,7 @@ async def chat_stream(m: types.Message):
             response_stream = ai.models.generate_content_stream(
                 model=MODEL_NAME,
                 contents=m.text,
-                config=dict(
-                    system_instruction=system_instruction
-                )
+                config=dict(system_instruction=system_instruction)
             )
 
             for chunk in response_stream:
@@ -134,19 +143,18 @@ async def chat_stream(m: types.Message):
             if "503" in str(e) and attempt < max_retries - 1:
                 await asyncio.sleep(2)
                 continue
-            await sent_message.edit_text("💔 {EMOJI_B_HEART}",f" Ошибка генерации: {e}", parse_mode=None)
+            await sent_message.edit_text(f"{EMOJI_B_HEART} Ошибка генерации: {e}", parse_mode=ParseMode.HTML)
             break
 
 
-# Анализ фото с описанием
 @dp.message(F.photo)
 async def photo_edit(m: types.Message):
     if not check_access(m.from_user.id):
-        return await m.answer("💔 {EMOJI_B_HEART} Доступ ограничен.")
+        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
     prompt = m.caption or "Опиши подробно, что изображено на картинке."
     await bot.send_chat_action(m.chat.id, "typing")
-    status_msg = await m.reply("🤔 {EMOJI_THINK} Анализирую фото...")
+    status_msg = await m.reply(f"{EMOJI_THINK} Анализирую фото...", parse_mode=ParseMode.HTML)
 
     try:
         file_info = await bot.get_file(m.photo[-1].file_id)
@@ -158,50 +166,52 @@ async def photo_edit(m: types.Message):
             contents=[
                 genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"),
                 prompt
-            ]
+            ],
+            config=dict(system_instruction=get_system_instruction())
         )
+        formatted_html = clean_markdown_for_telegram(res.text)
         try:
-            await status_msg.edit_text(res.text, parse_mode=ParseMode.MARKDOWN)
+            await status_msg.edit_text(formatted_html, parse_mode=ParseMode.HTML)
         except Exception:
             await status_msg.edit_text(res.text, parse_mode=None)
     except Exception as e:
-        await status_msg.edit_text("💔 {EMOJI_B_HEART}",f" Ошибка: {e}", parse_mode=None)
+        await status_msg.edit_text(f"{EMOJI_B_HEART} Ошибка: {e}", parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("image"))
 async def gen_image(m: types.Message):
     if not check_access(m.from_user.id):
-        return await m.answer("💔 {EMOJI_B_HEART} Доступ ограничен.")
+        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
     prompt = m.text.replace("/image", "").strip()
     if not prompt:
-        return await m.answer("⚠️ Укажите описание картинки:\n`/image кот в очках`")
+        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image кот в очках</code>", parse_mode=ParseMode.HTML)
 
-    msg = await m.answer("🤔 {EMOJI_THINK} Генерирую изображение...")
+    msg = await m.answer(f"{EMOJI_THINK} Генерирую изображение...", parse_mode=ParseMode.HTML)
     try:
         res = ai.models.generate_images(model="imagen-3.0-generate-002", prompt=prompt)
         photo = BufferedInputFile(res.generated_images[0].image.image_bytes, filename="art.jpg")
         await m.answer_photo(photo=photo, caption=f"Prompt: {prompt}")
         await msg.delete()
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}", parse_mode=None)
+        await msg.edit_text(f"{EMOJI_B_HEART} Ошибка: {e}", parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("video"))
 async def queue_video(m: types.Message):
     if not check_access(m.from_user.id):
-        return await m.answer("💔 {EMOJI_B_HEART} Доступ ограничен.")
+        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
     prompt = m.text.replace("/video", "").strip()
     if not prompt:
-        return await m.answer("⚠️ Укажите описание видео:\n`/video закат в горах`")
+        return await m.answer(f"{EMOJI_SUS} Укажите описание видео:\n<code>/video закат в горах</code>", parse_mode=ParseMode.HTML)
 
     if not redis:
-        return await m.answer("⚠️ Сервер очереди не настроен.")
+        return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
 
     task = {"chat_id": m.chat.id, "user_id": m.from_user.id, "prompt": prompt}
     redis.rpush("video_queue", json.dumps(task))
-    await m.answer("⏳ Задача на видео добавлена в очередь.")
+    await m.answer(f"{EMOJI_OK} Задача на видео добавлена в очередь.", parse_mode=ParseMode.HTML)
 
 
 @app.post("/")
