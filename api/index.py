@@ -26,6 +26,8 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
+CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
 
 EMOJI_SHAKE = '<tg-emoji emoji-id="4949806429746758578">🤝</tg-emoji>'
 EMOJI_THINK = '<tg-emoji emoji-id="4942915489727775648">🤔</tg-emoji>'
@@ -85,25 +87,37 @@ def clean_markdown_for_telegram(text: str) -> str:
     return text
 
 
-async def hf_generate_flux(prompt: str) -> bytes | None:
-    url = "[https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell](https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell)"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    payload = {"inputs": prompt}
+async def cf_generate_flux(prompt: str) -> bytes | None:
+    if not CF_ACCOUNT_ID or not CF_API_TOKEN:
+        return None
+
+    url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+    headers = {
+        "Authorization": f"Bearer {CF_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "prompt": prompt,
+        "num_steps": 4
+    }
 
     async with aiohttp.ClientSession() as session:
         for _ in range(3):
-            async with session.post(url, headers=headers, json=payload, timeout=60) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                elif resp.status == 503:
-                    await asyncio.sleep(4)
-                else:
-                    break
+            try:
+                async with session.post(url, headers=headers, json=payload, timeout=50) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+                    elif resp.status in (503, 524, 429):
+                        await asyncio.sleep(3)
+                    else:
+                        break
+            except Exception:
+                await asyncio.sleep(2)
     return None
 
 
 async def hf_edit_image(image_bytes: bytes, instruction: str) -> bytes | None:
-    url = "[https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix](https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix)"
+    url = "[https://router.huggingface.co/hf-inference/models/timbrooks/instruct-pix2pix](https://router.huggingface.co/hf-inference/models/timbrooks/instruct-pix2pix)"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
     data = aiohttp.FormData()
@@ -112,13 +126,16 @@ async def hf_edit_image(image_bytes: bytes, instruction: str) -> bytes | None:
 
     async with aiohttp.ClientSession() as session:
         for _ in range(3):
-            async with session.post(url, headers=headers, data=data, timeout=60) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                elif resp.status == 503:
-                    await asyncio.sleep(4)
-                else:
-                    break
+            try:
+                async with session.post(url, headers=headers, data=data, timeout=60) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+                    elif resp.status in (503, 429):
+                        await asyncio.sleep(4)
+                    else:
+                        break
+            except Exception:
+                await asyncio.sleep(2)
     return None
 
 
@@ -263,8 +280,8 @@ async def gen_image(m: types.Message):
     if not user_prompt:
         return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image уютная комната в стиле киберпанк</code>", parse_mode=ParseMode.HTML)
 
-    if not HF_TOKEN:
-        return await m.answer(f"{EMOJI_SUS} HF_TOKEN не настроен.", parse_mode=ParseMode.HTML)
+    if not CF_ACCOUNT_ID or not CF_API_TOKEN:
+        return await m.answer(f"{EMOJI_SUS} Cloudflare API не настроен.", parse_mode=ParseMode.HTML)
 
     msg = await m.answer(f"{EMOJI_THINK} <i>Генерирую в FLUX.1...</i>", parse_mode=ParseMode.HTML)
 
@@ -281,7 +298,7 @@ async def gen_image(m: types.Message):
             pass
 
     try:
-        img_bytes = await hf_generate_flux(final_prompt)
+        img_bytes = await cf_generate_flux(final_prompt)
         if img_bytes:
             photo = BufferedInputFile(img_bytes, filename="art.jpg")
             caption = f"🎨 <b>Запрос:</b> {user_prompt}\n✨ <i>Модель: FLUX.1 Schnell</i>"
