@@ -91,9 +91,9 @@ def get_system_instruction() -> str:
 
     return (
         f"Текущая дата и точное время: {formatted_now}.\n"
-        "Ты умный и полезный семейный ассистент в Telegram. Форматируй текст аккуратно: "
-        "для выделения используй **жирный** или *курсив*, "
-        "для блоков кода обязательно используй тройные кавычки ```язык с кодом внутри. "
+        "Ты внимательный и заботливый семейный ассистент в Telegram. "
+        "Отвечай вежливо, четко и структурированно. "
+        "Для выделения важного используй жирный шрифт или курсив. "
         "Никогда не используй тройные звёздочки (***)."
     )
 
@@ -123,13 +123,13 @@ async def start(m: types.Message):
 
     cur_model = get_user_model(m.from_user.id)
     text = (
-        f"{EMOJI_SHAKE} Привет! Я — GFTB, семейный ИИ-ассистент.\n\n"
-        f"• <b>Текущая модель:</b> <code>{cur_model}</code>\n"
-        f"• <b>Сменить модель:</b> /model\n"
-        f"• <b>Текстовый вопрос</b> — стриминг в реальном времени\n"
-        f"• <b>Фото с описанием</b> — умный анализ или задача на обработку\n"
-        f"• <code>/image &lt;описание&gt;</code> — генерация картинки (через очередь)\n"
-        f"• <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
+        f"{EMOJI_SHAKE} Привет! Я — ваш семейный ИИ-помощник.\n\n"
+        f"• <b>Активная модель:</b> <code>{cur_model}</code>\n"
+        f"• <b>Выбор модели:</b> /model\n\n"
+        f"<b>Что я умею:</b>\n"
+        f"💬 <b>Текстовый диалог:</b> Просто спроси что угодно — я мгновенно отвечу.\n"
+        f"🖼 <b>Фотографии:</b> Отправь фото с вопросом (анализ, рецепт, перевод) или напиши, что на нем изменить (поменять фон, одежду, добавить детали).\n"
+        f"🎨 <code>/image &lt;описание&gt;</code> — нарисовать новую картинку с нуля."
     )
     await m.answer(text, parse_mode=ParseMode.HTML)
 
@@ -228,21 +228,25 @@ async def photo_handler(m: types.Message):
     is_edit_request = False
     final_caption = raw_caption
 
-    # Логика AI-маршрутизатора без привязки к жестким ключевым словам
     if raw_caption.lower().startswith("/edit"):
         is_edit_request = True
         final_caption = raw_caption.replace("/edit", "", 1).strip()
     elif raw_caption:
+        # Умный AI-маршрутизатор: определяет интент по смыслу фразы
         try:
-            # Сверхбыстрый запрос для определения намерения (доли секунды)
             intent_res = ai.models.generate_content(
-                model="gemini-3.5-flash-lite",
-                contents=f"Text: '{raw_caption}'. Is this a request to EDIT/MODIFY an image (e.g. change background, add objects), or to ANALYZE/DESCRIBE it? Reply strictly with 1 word: EDIT or ANALYZE."
+                model="gemini-2.0-flash-lite",
+                contents=(
+                    f"Text: '{raw_caption}'. "
+                    "Determine if the user wants to EDIT/MODIFY this image (e.g. change face, clothes, background, add objects) "
+                    "or ANALYZE/DESCRIBE it (e.g. what is this, translate text, explain, recipe). "
+                    "Answer strictly with 1 word: EDIT or ANALYZE."
+                )
             )
             if "EDIT" in intent_res.text.upper():
                 is_edit_request = True
         except Exception:
-            pass # Если API упадет, фолбэк уйдет в обычный анализ
+            pass
     else:
         final_caption = "Опиши подробно, что изображено на картинке."
 
@@ -259,8 +263,9 @@ async def photo_handler(m: types.Message):
             "created_at": time.time()
         }
         redis.rpush("media_queue", json.dumps(task))
-        return await m.answer(f"{EMOJI_OK} Задача на редактирование отправлена Qwen.", parse_mode=ParseMode.HTML)
+        return await m.answer(f"{EMOJI_OK} Задача на редактирование добавлена в очередь.", parse_mode=ParseMode.HTML)
 
+    # Ветка анализа фото (Vision)
     await bot.send_chat_action(m.chat.id, "typing")
     status_msg = await m.reply(f"{EMOJI_THINK} <i>Анализирую фото...</i>", parse_mode=ParseMode.HTML)
     user_model = get_user_model(m.from_user.id)
@@ -303,7 +308,7 @@ async def gen_image(m: types.Message):
 
     user_prompt = m.text.replace("/image", "").strip()
     if not user_prompt:
-        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image уютная комната в стиле киберпанк</code>", parse_mode=ParseMode.HTML)
+        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image уютный осенний парк на закате</code>", parse_mode=ParseMode.HTML)
 
     if not redis:
         return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
@@ -316,30 +321,7 @@ async def gen_image(m: types.Message):
         "created_at": time.time()
     }
     redis.rpush("media_queue", json.dumps(task))
-    await m.answer(f"{EMOJI_OK} Задача на генерацию картинки (FLUX) добавлена в очередь.", parse_mode=ParseMode.HTML)
-
-
-@dp.message(Command("video"))
-async def queue_video(m: types.Message):
-    if not check_access(m.from_user.id):
-        return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
-
-    prompt = m.text.replace("/video", "").strip()
-    if not prompt:
-        return await m.answer(f"{EMOJI_SUS} Укажите описание видео:\n<code>/video закат в горах</code>", parse_mode=ParseMode.HTML)
-
-    if not redis:
-        return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
-
-    task = {
-        "type": "gen_video",
-        "chat_id": m.chat.id,
-        "message_id": m.message_id,
-        "prompt": prompt,
-        "created_at": time.time()
-    }
-    redis.rpush("media_queue", json.dumps(task))
-    await m.answer(f"{EMOJI_OK} Задача на видео добавлена в очередь.", parse_mode=ParseMode.HTML)
+    await m.answer(f"{EMOJI_OK} Задача на генерацию отправлена (FLUX).", parse_mode=ParseMode.HTML)
 
 
 @app.post("/")
@@ -351,7 +333,7 @@ async def webhook(req: Request):
         upd = types.Update(**data)
         await dp.feed_update(bot, upd)
     except Exception as e:
-        print(f"Webhook update handled: {e}")
+        print(f"Webhook update error: {e}")
     return {"status": "ok"}
 
 
