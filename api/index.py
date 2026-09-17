@@ -34,7 +34,7 @@ ALLOWED_USERS = {
     if uid.strip().isdigit()
 }
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 ai = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 redis = Redis(url=UPSTASH_URL, token=UPSTASH_TOKEN) if (UPSTASH_URL and UPSTASH_TOKEN) else None
@@ -47,15 +47,15 @@ def check_access(user_id: int) -> bool:
 @dp.message(CommandStart())
 async def start(m: types.Message):
     if not check_access(m.from_user.id):
-        return await m.answer("💔 {EMOJI_B_HEART} Доступ закрыт. Этот бот настроен только для семьи.")
-    await m.answer(
-        "👋 {EMOJI_SHAKE} *Привет! Я GFTB.*\n\n"
-        "• *Текстовый вопрос* — вывод в реальном времени\n"
-        "• *Фото с описанием* — анализ изображения\n"
-        "• `/image <описание>` — генерация изображения\n"
-        "• `/video <описание>` — генерация видео (через очередь)",
-        parse_mode=ParseMode.MARKDOWN
+        return await m.answer("⛔ Доступ закрыт. Этот бот настроен только для семьи.")
+    text = (
+        f"👋 {EMOJI_SHAKE} <b>Привет! Я семейный ИИ-ассистент.</b>\n\n"
+        f"• <b>Текстовый вопрос</b> — вывод в реальном времени\n"
+        f"• <b>Фото с описанием</b> — анализ изображения\n"
+        f"• <code>/image &lt;описание&gt;</code> — генерация картинки\n"
+        f"• <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
     )
+    await m.answer(text, parse_mode=ParseMode.HTML)
 
 def clean_markdown_for_telegram(text: str) -> str:
     """Очищает и адаптирует форматирование нейросети под Telegram HTML."""
@@ -86,7 +86,7 @@ async def chat_stream(m: types.Message):
         return await m.answer("💔 {EMOJI_B_HEART} Доступ ограничен.")
 
     await bot.send_chat_action(m.chat.id, "typing")
-    sent_message = await m.answer("💭...")
+    sent_message = await m.answer(f"{EMOJI_THINK} <i>Думаю...</i>", parse_mode=ParseMode.HTML)
 
     full_text = ""
     last_edit_time = time.time()
