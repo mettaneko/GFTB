@@ -73,7 +73,7 @@ async def photo_edit(m: types.Message):
         await bot.download_file(file_info.file_path, destination=buf)
         
         res = ai.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=[
                 genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"), 
                 prompt
