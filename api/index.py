@@ -54,7 +54,7 @@ async def chat(m: types.Message):
     
     await bot.send_chat_action(m.chat.id, "typing")
     try:
-        res = ai.models.generate_content(model="gemini-2.5-flash", contents=m.text)
+        res = ai.models.generate_content(model="gemini-3.6-flash", contents=m.text)
         await m.answer(res.text)
     except Exception as e:
         await m.answer(f"❌ Ошибка генерации: {e}")
