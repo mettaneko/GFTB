@@ -228,9 +228,13 @@ async def photo_handler(m: types.Message):
     if not caption:
         caption = "Опиши подробно, что изображено на картинке."
 
-    edit_keywords = ["сделай", "добавь", "измени", "убери", "нарисуй", "поменяй", "переделай", "в стиле"]
-    is_edit_request = any(kw in caption.lower() for kw in edit_keywords)
+    edit_keywords = [
 
+        "сделай", "добавь", "измени", "убери", "нарисуй", "поменяй", "переделай", "в стиле", "лазер",
+
+        "make", "add", "turn", "change", "put", "draw", "laser", "remove", "replace", "shoot"
+    ]
+    is_edit_request = any(kw in caption.lower() for kw in edit_keywords)
     if is_edit_request:
         if not redis:
             return await m.answer(f"{EMOJI_SUS} Сервер очереди не настроен.", parse_mode=ParseMode.HTML)
