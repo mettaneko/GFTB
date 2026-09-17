@@ -4,6 +4,8 @@ import io
 import asyncio
 import time
 import re
+import random
+import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
@@ -30,7 +32,7 @@ EMOJI_B_HEART = '<tg-emoji emoji-id="4949561414747423396">💔</tg-emoji>'
 EMOJI_SUS = '<tg-emoji emoji-id="4951814692029858673">🤨</tg-emoji>'
 EMOJI_OK = '<tg-emoji emoji-id="4947363551133041555">👌</tg-emoji>'
 
-MODEL_NAME = "gemini-3.8-flash"
+MODEL_NAME = "gemini-2.5-flash"
 
 ALLOWED_USERS = {
     int(uid.strip())
@@ -92,7 +94,7 @@ async def start(m: types.Message):
         f"• <b>Текстовый вопрос</b> — вывод в реальном времени\n"
         f"• <b>Фото с описанием</b> — анализ изображения\n"
         f"• <code>/image &lt;описание&gt;</code> — генерация картинки\n"
-        f"• <code>/video &lt;описание&gt;</code> — генерация видео (через очередь) // {EMOJI_B_HEART} Временно недоступно"
+        f"• {EMOJI_B_HEART} Временно недоступно | <code>/video &lt;описание&gt;</code> — генерация видео (через очередь)"
     )
     await m.answer(text, parse_mode=ParseMode.HTML)
 
@@ -148,14 +150,48 @@ async def chat_stream(m: types.Message):
 
 
 @dp.message(F.photo)
-async def photo_edit(m: types.Message):
+async def photo_handler(m: types.Message):
     if not check_access(m.from_user.id):
         return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
-    prompt = m.caption or "Опиши подробно, что изображено на картинке."
-    await bot.send_chat_action(m.chat.id, "typing")
-    status_msg = await m.reply(f"{EMOJI_THINK} Анализирую фото...", parse_mode=ParseMode.HTML)
+    caption = (m.caption or "").strip()
+    if not caption:
+        caption = "Опиши подробно, что изображено на картинке."
 
+    edit_keywords = ["сделай", "добавь", "измени", "убери", "нарисуй", "поменяй", "переделай", "в стиле"]
+    is_edit_request = any(kw in caption.lower() for kw in edit_keywords)
+
+    await bot.send_chat_action(m.chat.id, "typing")
+
+    if is_edit_request:
+        status_msg = await m.reply(f"{EMOJI_THINK} <i>Редактирую фото...</i>", parse_mode=ParseMode.HTML)
+        try:
+            file_info = await bot.get_file(m.photo[-1].file_id)
+            tg_image_url = f"[https://api.telegram.org/file/bot](https://api.telegram.org/file/bot){BOT_TOKEN}/{file_info.file_path}"
+
+            enhancer_prompt = (
+                f"Translate this photo modification instruction into a concise English prompt for image-to-image AI: {caption}. "
+                "Return ONLY the prompt, no extra words."
+            )
+            enhanced = ai.models.generate_content(model=MODEL_NAME, contents=enhancer_prompt)
+            prompt_en = enhanced.text.strip().replace('"', '')
+
+            encoded_prompt = urllib.parse.quote(prompt_en)
+            encoded_image_url = urllib.parse.quote(tg_image_url)
+
+            result_url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?image={encoded_image_url}&model=flux&nologo=true"
+
+            await m.answer_photo(
+                photo=result_url, 
+                caption=f"✨ <b>Готово!</b>\n<i>Запрос:</i> {caption}", 
+                parse_mode=ParseMode.HTML
+            )
+            await status_msg.delete()
+        except Exception as e:
+            await status_msg.edit_text(f"{EMOJI_B_HEART} Ошибка обработки: {e}", parse_mode=ParseMode.HTML)
+        return
+
+    status_msg = await m.reply(f"{EMOJI_THINK} <i>Анализирую фото...</i>", parse_mode=ParseMode.HTML)
     try:
         file_info = await bot.get_file(m.photo[-1].file_id)
         buf = io.BytesIO()
@@ -165,7 +201,7 @@ async def photo_edit(m: types.Message):
             model=MODEL_NAME,
             contents=[
                 genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"),
-                prompt
+                caption
             ],
             config=dict(system_instruction=get_system_instruction())
         )
@@ -183,18 +219,40 @@ async def gen_image(m: types.Message):
     if not check_access(m.from_user.id):
         return await m.answer(f"{EMOJI_B_HEART} Доступ ограничен.")
 
-    prompt = m.text.replace("/image", "").strip()
-    if not prompt:
-        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image кот в очках</code>", parse_mode=ParseMode.HTML)
+    user_prompt = m.text.replace("/image", "").strip()
+    if not user_prompt:
+        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image пушистый кот в космосе</code>", parse_mode=ParseMode.HTML)
 
-    msg = await m.answer(f"{EMOJI_THINK} Генерирую изображение...", parse_mode=ParseMode.HTML)
+    msg = await m.answer(f"{EMOJI_THINK} <i>Генерирую изображение (Flux)...</i>", parse_mode=ParseMode.HTML)
+
     try:
-        res = ai.models.generate_images(model="imagen-3.0-generate-002", prompt=prompt)
-        photo = BufferedInputFile(res.generated_images[0].image.image_bytes, filename="art.jpg")
-        await m.answer_photo(photo=photo, caption=f"Prompt: {prompt}")
+        enhancer_prompt = (
+            f"Translate to English if needed and enrich this image prompt for Flux model. "
+            f"Make it visually stunning, 8k resolution, cinematic lighting, detailed textures. "
+            f"Return ONLY the enriched prompt in one paragraph, no extra words, no quotes: {user_prompt}"
+        )
+        enhanced_res = ai.models.generate_content(
+            model=MODEL_NAME,
+            contents=enhancer_prompt
+        )
+        final_prompt = enhanced_res.text.strip().replace('"', '')
+
+        encoded_prompt = urllib.parse.quote(final_prompt)
+        seed = random.randint(1, 99999999)
+        image_url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?model=flux&width=1024&height=1024&seed={seed}&nologo=true"
+
+        caption = f"🎨 <b>Запрос:</b> {user_prompt}\n✨ <i>Модель: FLUX.1</i>"
+        await m.answer_photo(photo=image_url, caption=caption, parse_mode=ParseMode.HTML)
         await msg.delete()
+
     except Exception as e:
-        await msg.edit_text(f"{EMOJI_B_HEART} Ошибка: {e}", parse_mode=ParseMode.HTML)
+        encoded_raw = urllib.parse.quote(user_prompt)
+        image_url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_raw}?model=flux&nologo=true"
+        try:
+            await m.answer_photo(photo=image_url, caption=f"🎨 {user_prompt}")
+            await msg.delete()
+        except Exception:
+            await msg.edit_text(f"{EMOJI_B_HEART} Ошибка генерации: {e}", parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("video"))
