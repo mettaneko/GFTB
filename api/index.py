@@ -122,8 +122,17 @@ async def queue_video(m: types.Message):
     await m.answer("⏳ Задача поставлена в очередь генерации. Как только видео будет готово, бот пришлет его сюда!")
 
 
+
+@app.post("/")
 @app.post("/api/index")
+@app.post("/api/index.py")
 async def webhook(req: Request):
     upd = types.Update(**(await req.json()))
     await dp.feed_update(bot, upd)
     return {"status": "ok"}
+
+@app.get("/")
+@app.get("/api/index")
+@app.get("/api/index.py")
+async def health():
+    return {"status": "alive"}
