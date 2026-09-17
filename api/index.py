@@ -17,7 +17,6 @@ from google import genai
 from google.genai import types as genai_types
 
 app = FastAPI()
-__all__ = ["app"]
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
