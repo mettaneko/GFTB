@@ -32,7 +32,7 @@ EMOJI_B_HEART = '<tg-emoji emoji-id="4949561414747423396">💔</tg-emoji>'
 EMOJI_SUS = '<tg-emoji emoji-id="4951814692029858673">🤨</tg-emoji>'
 EMOJI_OK = '<tg-emoji emoji-id="4947363551133041555">👌</tg-emoji>'
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.8-flash"
 
 ALLOWED_USERS = {
     int(uid.strip())
