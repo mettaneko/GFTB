@@ -13,11 +13,17 @@ from aiogram.client.default import DefaultBotProperties
 from google import genai
 from google.genai import types as genai_types
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL")
-UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+# 1. Точка входа для Vercel
+app = FastAPI()
+__all__ = ["app"]
 
+# 2. Настройки и переменные
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+
+# Рабочая flash-модель
 MODEL_NAME = "gemini-3.6-flash"
 
 ALLOWED_USERS = {
@@ -28,10 +34,8 @@ ALLOWED_USERS = {
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher()
-app = FastAPI()
-ai = genai.Client(api_key=GEMINI_KEY)
-
-redis = Redis(url=UPSTASH_URL, token=UPSTASH_TOKEN) if UPSTASH_URL and UPSTASH_TOKEN else None
+ai = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+redis = Redis(url=UPSTASH_URL, token=UPSTASH_TOKEN) if (UPSTASH_URL and UPSTASH_TOKEN) else None
 
 
 def check_access(user_id: int) -> bool:
@@ -43,7 +47,7 @@ async def start(m: types.Message):
     if not check_access(m.from_user.id):
         return await m.answer("⛔ Доступ закрыт. Этот бот настроен только для семьи.")
     await m.answer(
-        "👋 *Привет! Я GFTB - семейный ИИ-ассистент на основе Gemini.*\n\n"
+        "👋 *Привет! Я GFTB.*\n\n"
         "• *Текстовый вопрос* — вывод в реальном времени\n"
         "• *Фото с описанием* — анализ изображения\n"
         "• `/image <описание>` — генерация изображения\n"
@@ -52,7 +56,7 @@ async def start(m: types.Message):
     )
 
 
-# Текстовые диалоги со стримингом (постепенный вывод)
+# Постепенный вывод текста (стриминг чанками)
 @dp.message(F.text & ~F.text.startswith("/"))
 async def chat_stream(m: types.Message):
     if not check_access(m.from_user.id):
@@ -63,7 +67,7 @@ async def chat_stream(m: types.Message):
 
     full_text = ""
     last_edit_time = time.time()
-    edit_delay = 0.8
+    edit_delay = 0.8  # Ограничение по частоте редактирования (защита от Flood Control)
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -84,7 +88,7 @@ async def chat_stream(m: types.Message):
                             last_edit_time = current_time
                         except Exception:
                             pass
-n
+
             if full_text.strip():
                 try:
                     await sent_message.edit_text(full_text, parse_mode=ParseMode.MARKDOWN)
@@ -100,6 +104,7 @@ n
             break
 
 
+# Анализ фото с описанием
 @dp.message(F.photo)
 async def photo_edit(m: types.Message):
     if not check_access(m.from_user.id):
@@ -129,6 +134,7 @@ async def photo_edit(m: types.Message):
         await status_msg.edit_text(f"❌ Ошибка: {e}", parse_mode=None)
 
 
+# Генерация картинок
 @dp.message(Command("image"))
 async def gen_image(m: types.Message):
     if not check_access(m.from_user.id):
@@ -148,6 +154,7 @@ async def gen_image(m: types.Message):
         await msg.edit_text(f"❌ Ошибка: {e}", parse_mode=None)
 
 
+# Очередь на видео
 @dp.message(Command("video"))
 async def queue_video(m: types.Message):
     if not check_access(m.from_user.id):
@@ -164,6 +171,8 @@ async def queue_video(m: types.Message):
     redis.rpush("video_queue", json.dumps(task))
     await m.answer("⏳ Задача на видео добавлена в очередь.")
 
+
+# Маршрутизация для Webhook
 @app.post("/")
 @app.post("/api/index")
 @app.post("/api/index.py")
