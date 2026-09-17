@@ -249,8 +249,12 @@ async def queue_video(m: types.Message):
 @app.post("/api/index")
 @app.post("/api/index.py")
 async def webhook(req: Request):
-    upd = types.Update(**(await req.json()))
-    await dp.feed_update(bot, upd)
+    try:
+        data = await req.json()
+        upd = types.Update(**data)
+        await dp.feed_update(bot, upd)
+    except Exception as e:
+        print(f"Webhook update error: {e}")
     return {"status": "ok"}
 
 
