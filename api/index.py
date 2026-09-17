@@ -4,10 +4,10 @@ import io
 import asyncio
 import time
 import re
-import random
 import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import aiohttp
 from fastapi import FastAPI, Request
 from upstash_redis import Redis
 from aiogram import Bot, Dispatcher, types, F
@@ -25,6 +25,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 EMOJI_SHAKE = '<tg-emoji emoji-id="4949806429746758578">🤝</tg-emoji>'
 EMOJI_THINK = '<tg-emoji emoji-id="4942915489727775648">🤔</tg-emoji>'
@@ -84,11 +85,48 @@ def clean_markdown_for_telegram(text: str) -> str:
     return text
 
 
+async def hf_generate_flux(prompt: str) -> bytes | None:
+    url = "[https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell](https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell)"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    payload = {"inputs": prompt}
+
+    async with aiohttp.ClientSession() as session:
+        for _ in range(3):
+            async with session.post(url, headers=headers, json=payload, timeout=60) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                elif resp.status == 503:
+                    await asyncio.sleep(4)
+                else:
+                    break
+    return None
+
+
+async def hf_edit_image(image_bytes: bytes, instruction: str) -> bytes | None:
+    url = "[https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix](https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix)"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+    data = aiohttp.FormData()
+    data.add_field("image", image_bytes, filename="input.jpg", content_type="image/jpeg")
+    data.add_field("prompt", instruction)
+
+    async with aiohttp.ClientSession() as session:
+        for _ in range(3):
+            async with session.post(url, headers=headers, data=data, timeout=60) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                elif resp.status == 503:
+                    await asyncio.sleep(4)
+                else:
+                    break
+    return None
+
+
 @dp.message(CommandStart())
 async def start(m: types.Message):
     if not check_access(m.from_user.id):
         return await m.answer(f"{EMOJI_B_HEART} Доступ закрыт. Этот бот настроен только для семьи.")
-    
+
     text = (
         f"{EMOJI_SHAKE} Привет! Я - GFTB. Семейный, <b>БЕСПЛАТНЫЙ</b> ИИ-ассистент. Построен на базе <b>Gemini</b> и генератором изображений <b>FLUX.1</b>.\n\n"
         f"• <b>Текстовый вопрос</b> — вывод в реальном времени\n"
@@ -163,44 +201,46 @@ async def photo_handler(m: types.Message):
 
     await bot.send_chat_action(m.chat.id, "typing")
 
+    file_info = await bot.get_file(m.photo[-1].file_id)
+    buf = io.BytesIO()
+    await bot.download_file(file_info.file_path, destination=buf)
+    img_bytes = buf.getvalue()
+
     if is_edit_request:
+        if not HF_TOKEN:
+            return await m.answer(f"{EMOJI_SUS} HF_TOKEN не настроен.", parse_mode=ParseMode.HTML)
+
         status_msg = await m.reply(f"{EMOJI_THINK} <i>Редактирую фото...</i>", parse_mode=ParseMode.HTML)
         try:
-            file_info = await bot.get_file(m.photo[-1].file_id)
-            tg_image_url = f"[https://api.telegram.org/file/bot](https://api.telegram.org/file/bot){BOT_TOKEN}/{file_info.file_path}"
+            instruction_en = caption
+            if ai:
+                try:
+                    tr = ai.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=f"Translate this photo edit instruction into simple English command: {caption}. Output ONLY the instruction."
+                    )
+                    if tr.text:
+                        instruction_en = tr.text.strip().replace('"', '')
+                except Exception:
+                    pass
 
-            enhancer_prompt = (
-                f"Translate this photo modification instruction into a concise English prompt for image-to-image AI: {caption}. "
-                "Return ONLY the prompt, no extra words."
-            )
-            enhanced = ai.models.generate_content(model=MODEL_NAME, contents=enhancer_prompt)
-            prompt_en = enhanced.text.strip().replace('"', '')
-
-            encoded_prompt = urllib.parse.quote(prompt_en)
-            encoded_image_url = urllib.parse.quote(tg_image_url)
-
-            result_url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?image={encoded_image_url}&model=flux&nologo=true"
-
-            await m.answer_photo(
-                photo=result_url, 
-                caption=f"✨ <b>Готово!</b>\n<i>Запрос:</i> {caption}", 
-                parse_mode=ParseMode.HTML
-            )
-            await status_msg.delete()
+            result_bytes = await hf_edit_image(img_bytes, instruction_en)
+            if result_bytes:
+                photo_file = BufferedInputFile(result_bytes, filename="edited.jpg")
+                await m.answer_photo(photo=photo_file, caption=f"✨ <b>Готово!</b>\n<i>Запрос:</i> {caption}", parse_mode=ParseMode.HTML)
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text(f"{EMOJI_B_HEART} Ошибка обработки через нейросеть.", parse_mode=ParseMode.HTML)
         except Exception as e:
-            await status_msg.edit_text(f"{EMOJI_B_HEART} Ошибка обработки: {e}", parse_mode=ParseMode.HTML)
+            await status_msg.edit_text(f"{EMOJI_B_HEART} Ошибка: {e}", parse_mode=ParseMode.HTML)
         return
 
     status_msg = await m.reply(f"{EMOJI_THINK} <i>Анализирую фото...</i>", parse_mode=ParseMode.HTML)
     try:
-        file_info = await bot.get_file(m.photo[-1].file_id)
-        buf = io.BytesIO()
-        await bot.download_file(file_info.file_path, destination=buf)
-
         res = ai.models.generate_content(
             model=MODEL_NAME,
             contents=[
-                genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"),
+                genai_types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
                 caption
             ],
             config=dict(system_instruction=get_system_instruction())
@@ -221,41 +261,37 @@ async def gen_image(m: types.Message):
 
     user_prompt = m.text.replace("/image", "").strip()
     if not user_prompt:
-        return await m.answer(
-            f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image пушистый кот в космосе</code>", 
-            parse_mode=ParseMode.HTML
-        )
+        return await m.answer(f"{EMOJI_SUS} Укажите описание картинки:\n<code>/image уютная комната в стиле киберпанк</code>", parse_mode=ParseMode.HTML)
 
-    msg = await m.answer(f"{EMOJI_THINK} <i>Генерирую изображение на базе <b>FLUX.1</b>...</i>", parse_mode=ParseMode.HTML)
+    if not HF_TOKEN:
+        return await m.answer(f"{EMOJI_SUS} HF_TOKEN не настроен.", parse_mode=ParseMode.HTML)
+
+    msg = await m.answer(f"{EMOJI_THINK} <i>Генерирую в FLUX.1...</i>", parse_mode=ParseMode.HTML)
 
     final_prompt = user_prompt
     if ai:
-        enhancer_prompt = (
-            f"Translate to English if needed and optimize this prompt for FLUX image generator. "
-            f"Preserve all specific details. Return ONLY the final prompt text, no explanations, no quotes: {user_prompt}"
-        )
-        for _ in range(2):
-            try:
-                enhanced_res = ai.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=enhancer_prompt
-                )
-                if enhanced_res.text:
-                    final_prompt = enhanced_res.text.strip().replace('"', '')
-                break
-            except Exception:
-                await asyncio.sleep(1)
+        try:
+            enhanced_res = ai.models.generate_content(
+                model=MODEL_NAME,
+                contents=f"Translate to English if needed and improve this prompt for FLUX.1 image generator: {user_prompt}. Keep it focused and clear. Output ONLY the improved prompt, no quotes."
+            )
+            if enhanced_res.text:
+                final_prompt = enhanced_res.text.strip().replace('"', '')
+        except Exception:
+            pass
 
     try:
-        encoded_prompt = urllib.parse.quote(final_prompt)
-        seed = random.randint(1, 99999999)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux&width=1024&height=1024&seed={seed}&nologo=true"
-
-        caption = f"🎨 <b>Запрос:</b> {user_prompt[:300]}\n✨ <i>Модель: FLUX.1</i>"
-        await m.answer_photo(photo=image_url, caption=caption, parse_mode=ParseMode.HTML)
-        await msg.delete()
+        img_bytes = await hf_generate_flux(final_prompt)
+        if img_bytes:
+            photo = BufferedInputFile(img_bytes, filename="art.jpg")
+            caption = f"🎨 <b>Запрос:</b> {user_prompt}\n✨ <i>Модель: FLUX.1 Schnell</i>"
+            await m.answer_photo(photo=photo, caption=caption, parse_mode=ParseMode.HTML)
+            await msg.delete()
+        else:
+            await msg.edit_text(f"{EMOJI_B_HEART} Не удалось сгенерировать изображение (сервер занят).", parse_mode=ParseMode.HTML)
     except Exception as e:
         await msg.edit_text(f"{EMOJI_B_HEART} Ошибка генерации: {e}", parse_mode=ParseMode.HTML)
+
 
 @dp.message(Command("video"))
 async def queue_video(m: types.Message):
